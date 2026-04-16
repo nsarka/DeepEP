@@ -304,6 +304,10 @@ As an alternative to the DOCA/RDMA inter-node path, Hybrid-EP now experimentally
 
 A complete example Dockerfile for building DeepEP with NIXL is provided at [`docs/Dockerfile.nixl`](docs/Dockerfile.nixl).
 
+## App-Aware Congestion Control (CC)
+
+Nick: TODO
+
 ## Roadmap
 
 - [x] AR support
