@@ -203,6 +203,7 @@ Optional overrides:
 - `DOCA_GPUNETIO_LITE` — path to an existing doca-gpunetio-lite checkout (default: `third-party/doca-gpunetio-lite`)
 - `DOCA_GPUNETIO_LITE_LIB` — path to `libdoca_gpunetio_host.so` (default: written to `deep_ep/backend/doca_gpunetio_lib_path` at install time)
 - `DOCA_SDK_LIB_PATH` — runtime path to closed DOCA SDK libs (enables `doca_verbs_*_sdk_wrapper` via dlopen)
+- `HYBRID_EP_CC_HINTS=1` — enable NVIDIA SPC-X CC hint groups (dispatch + combine); requires `DOCA_SDK_LIB_PATH` with closed DOCA Verbs SDK. Hints are derived from the global routing map (`incast_factor`, `qps_per_dst`) and updated before each dispatch/combine via `doca_verbs_sdk_wrapper_cc_group_modify`. QPs attach to the CC group on INIT→RTR (`doca_verbs_qp_attr_set_cc_group`).
  
 > RDMA Core requirement: install `rdma-core` v60.0 ([reference](https://github.com/linux-rdma/rdma-core/tree/v60.0)), and the latest release is also recommended ([linux-rdma/rdma-core](https://github.com/linux-rdma/rdma-core.git)).
 

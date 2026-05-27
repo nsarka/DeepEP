@@ -145,6 +145,14 @@ HandleImpl HybridEPBuffer::metadata_preprocessing(HybridEpConfigInstance config,
     allgather_obj, config, local_routing_map, process_group
   );
 
+#ifdef HYBRID_EP_BUILD_MULTINODE_ENABLE
+#ifndef USE_NIXL
+  if (config.num_of_nodes > 1) {
+    internode_coordinator.update_cc_hints_from_routing(global_routing_map, num_of_tokens_per_rank, 0);
+  }
+#endif
+#endif
+
   // Run the hybrid-ep metadata preprocessing kernel
   auto handle = executor.metadata_preprocess_core(
     config, 
@@ -159,6 +167,13 @@ HandleImpl HybridEPBuffer::metadata_preprocessing(HybridEpConfigInstance config,
     fuse_permute_dispatch,
     non_blocking
   );
+#ifdef HYBRID_EP_BUILD_MULTINODE_ENABLE
+#ifndef USE_NIXL
+  if (config.num_of_nodes > 1) {
+    handle.global_routing_map_host = global_routing_map.cpu();
+  }
+#endif
+#endif
   return handle;
 }
 
@@ -255,6 +270,15 @@ HybridEPBuffer::combine(
   args.num_of_tokens_per_rank = handle.num_of_tokens_per_rank;
   args.enable_unpermute = false;
   args.stream = at::cuda::getCurrentCUDAStream();
+
+#ifdef HYBRID_EP_BUILD_MULTINODE_ENABLE
+#ifndef USE_NIXL
+  if (config.num_of_nodes > 1 && handle.global_routing_map_host.defined()) {
+    internode_coordinator.update_cc_hints_from_routing(handle.global_routing_map_host,
+                                                       handle.num_of_tokens_per_rank, 1);
+  }
+#endif
+#endif
 
   // Run the full combine operation
   config.backward_combine_api = with_probs;

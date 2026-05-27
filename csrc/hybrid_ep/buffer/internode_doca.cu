@@ -255,7 +255,8 @@ doca_verbs_ah_attr_t *setup_qp_attr_for_modify(struct ibv_port_attr *port_attr,
 
 int doca_gpunetio_test_change_qp_state(struct doca_gpu_verbs_qp_hl *qp,
                                        doca_verbs_qp_attr_t *qp_attr,
-                                       int attr_mask) {
+                                       int attr_mask,
+                                       struct doca_verbs_cc_group *cc_group_opt) {
   doca_error_t status;
   int init_mask = attr_mask;
   status = doca_verbs_qp_attr_set_next_state(qp_attr, DOCA_VERBS_QP_STATE_INIT);
@@ -277,6 +278,14 @@ int doca_gpunetio_test_change_qp_state(struct doca_gpu_verbs_qp_hl *qp,
   if (status != DOCA_SUCCESS) {
     fprintf(stderr, "Failed to set QP next_state to RTR: %d\n", status);
     return status;
+  }
+  if (cc_group_opt != nullptr) {
+    status = doca_verbs_qp_attr_set_cc_group(qp_attr, cc_group_opt);
+    if (status != DOCA_SUCCESS) {
+      fprintf(stderr, "Failed to set CC group on QP attr for RTR: %d\n", status);
+      return status;
+    }
+    attr_mask_rtr |= DOCA_VERBS_QP_ATTR_CC_GROUP;
   }
   status = doca_verbs_qp_modify(qp->qp, qp_attr, attr_mask_rtr);
   if (status != DOCA_SUCCESS) {
@@ -302,7 +311,8 @@ int doca_gpunetio_test_change_qp_state(struct doca_gpu_verbs_qp_hl *qp,
 int setup_qp_attr_and_set_qp(struct gverbs_context *g_ctx, doca_dev_t *doca_net_dev,
                              struct ibv_port_attr *port_attr, struct remote_info *rem_dest,
                              doca_verbs_qp_attr_t *qp_attr, int num_of_blocks, int num_of_nodes,
-                             int node_rank, uint32_t qp_cnt) {
+                             int node_rank, uint32_t qp_cnt,
+                             struct doca_verbs_cc_group *cc_group_opt) {
   int attr_mask = DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
                   DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_READ | DOCA_VERBS_QP_ATTR_PORT_NUM |
                   DOCA_VERBS_QP_ATTR_PKEY_INDEX | DOCA_VERBS_QP_ATTR_ATOMIC_MODE;
@@ -316,8 +326,10 @@ int setup_qp_attr_and_set_qp(struct gverbs_context *g_ctx, doca_dev_t *doca_net_
       struct remote_info *l_info = &rem_dest[local_idx];
       struct remote_info *r_info = &rem_dest[rem_idx];
       struct doca_gpu_verbs_qp_hl *qp = g_ctx->qp_hls[curr_qp_idx];
-      setup_qp_attr_for_modify(port_attr, qp_attr, l_info, r_info, doca_net_dev);
-      doca_gpunetio_test_change_qp_state(qp, qp_attr, attr_mask);
+      doca_verbs_ah_attr_t *ah =
+          setup_qp_attr_for_modify(port_attr, qp_attr, l_info, r_info, doca_net_dev);
+      doca_gpunetio_test_change_qp_state(qp, qp_attr, attr_mask, cc_group_opt);
+      assert(doca_verbs_ah_attr_destroy(ah) == DOCA_SUCCESS);
     }
   }
   return 0;
@@ -394,10 +406,26 @@ void RDMACoordinator::init(
   get_gpu_handler(gpu_handler, ib_context, local_device_idx);
   assert(doca_gpu_create(gpu_handler->pci_bus_id, &doca_gpu_dev) == DOCA_SUCCESS);
   assert(doca_verbs_dev_open(ib_pd, &doca_net_dev) == DOCA_SUCCESS);
+  cc_hints_.try_init(doca_net_dev, node_rank);
   mr_access_flag = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
                       IBV_ACCESS_REMOTE_ATOMIC | IBV_ACCESS_RELAXED_ORDERING;
   
   rdma_initialized = true;
+}
+
+void RDMACoordinator::update_cc_hints_from_routing(torch::Tensor global_routing_map,
+                                                   int64_t num_of_tokens_per_rank,
+                                                   uint32_t phase) {
+  if (!cc_hints_.active() || !global_routing_map.defined()) {
+    return;
+  }
+  auto cpu_map = global_routing_map.contiguous().cpu();
+  const uint32_t qps_per_dst =
+      (phase == 0) ? static_cast<uint32_t>(buffer_config.num_of_blocks_dispatch_api)
+                   : static_cast<uint32_t>(buffer_config.num_of_blocks_combine_api);
+  cc_hints_.push_routing_from_global_map(cpu_map.data_ptr<bool>(), node_rank, local_rank,
+                                         buffer_config, static_cast<int>(num_of_tokens_per_rank),
+                                         phase, qps_per_dst);
 }
 
 void RDMACoordinator::allocate_dispatch_buffers(){
@@ -526,9 +554,11 @@ void RDMACoordinator::allocate_dispatch_buffers(){
   exchange_remote_rdma_info(dispatch_remote_info_vec, my_dispatch_info, num_of_dispatch_qps);
 
   // Init queue pairs.
-  setup_qp_attr_and_set_qp(&dispatch_gverbs_ctx, doca_net_dev, &port_attr,
-    dispatch_remote_info_vec, dispatch_gverbs_ctx.qp_attr,
-    buffer_config.num_of_blocks_dispatch_api, buffer_config.num_of_nodes, node_rank, num_of_dispatch_qps);
+  setup_qp_attr_and_set_qp(
+      &dispatch_gverbs_ctx, doca_net_dev, &port_attr, dispatch_remote_info_vec,
+      dispatch_gverbs_ctx.qp_attr, buffer_config.num_of_blocks_dispatch_api, buffer_config.num_of_nodes,
+      node_rank, num_of_dispatch_qps,
+      cc_hints_.active() ? cc_hints_.dispatch_cc_group() : nullptr);
   // Move queue pairs to GPU.
   doca_gpu_dev_verbs_qp **h_qps_gpu = (doca_gpu_dev_verbs_qp**)calloc(sizeof(*h_qps_gpu), num_of_dispatch_qps);
   for (int idx = 0; idx <  num_of_dispatch_qps; ++idx) {
@@ -675,9 +705,11 @@ void RDMACoordinator::allocate_combine_buffers(){
   exchange_remote_rdma_info(combine_remote_info_vec, my_combine_info, num_of_combine_qps);
 
   // Init queue pairs.
-  setup_qp_attr_and_set_qp(&combine_gverbs_ctx, doca_net_dev, &port_attr,
-    combine_remote_info_vec, combine_gverbs_ctx.qp_attr,
-    buffer_config.num_of_blocks_combine_api, buffer_config.num_of_nodes, node_rank, num_of_combine_qps);
+  setup_qp_attr_and_set_qp(
+      &combine_gverbs_ctx, doca_net_dev, &port_attr, combine_remote_info_vec,
+      combine_gverbs_ctx.qp_attr, buffer_config.num_of_blocks_combine_api, buffer_config.num_of_nodes,
+      node_rank, num_of_combine_qps,
+      cc_hints_.active() ? cc_hints_.combine_cc_group() : nullptr);
   // Move queue pairs to GPU.
   doca_gpu_dev_verbs_qp **h_qps_gpu = (doca_gpu_dev_verbs_qp**)calloc(sizeof(*h_qps_gpu), num_of_combine_qps);
   for (int idx = 0; idx <  num_of_combine_qps; ++idx) {
@@ -843,6 +875,7 @@ RDMACoordinator::~RDMACoordinator() {
   }
   
   if(rdma_initialized) {
+    cc_hints_.fini();
     if (doca_net_dev != nullptr) {
       doca_verbs_dev_close(doca_net_dev);
       doca_net_dev = nullptr;

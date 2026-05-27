@@ -5,6 +5,7 @@
 #include <pybind11/pybind11.h>
 
 #ifdef HYBRID_EP_BUILD_MULTINODE_ENABLE
+#include <torch/torch.h>
 #include "utils.cuh"
 #ifdef USE_NIXL
 namespace hybrid_ep { struct dispatch_gpu_nixl_ctx; struct combine_gpu_nixl_ctx; }
@@ -83,6 +84,8 @@ public:
     virtual void init(pybind11::object process_group, int node_rank, int local_rank, BufferConfig config) = 0;
     virtual InterNodeDispatchBuffers& get_dispatch_buffers() = 0;
     virtual InterNodeCombineBuffers& get_combine_buffers() = 0;
+    virtual void update_cc_hints_from_routing(torch::Tensor global_routing_map,
+                                              int64_t num_of_tokens_per_rank, uint32_t phase) {}
 };
 
 #endif  // HYBRID_EP_BUILD_MULTINODE_ENABLE

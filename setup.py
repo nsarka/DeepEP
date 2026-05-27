@@ -179,7 +179,10 @@ def get_extension_hybrid_ep_cpp():
         else:
             # DOCA path: upstream doca-gpunetio-lite (replaces NCCL-bundled doca-gpunetio)
             print('  -> DOCA path: building doca-gpunetio-lite')
-            sources.extend(["csrc/hybrid_ep/buffer/internode_doca.cu"])
+            sources.extend([
+                "csrc/hybrid_ep/buffer/internode_doca.cu",
+                "csrc/hybrid_ep/buffer/internode_cc_hints.cu",
+            ])
             rdma_core_dir = os.getenv("RDMA_CORE_HOME", "")
             doca_dir = resolve_doca_gpunetio_lite_dir(current_dir)
             cuda_home = os.getenv("CUDA_HOME", "/usr/local/cuda")

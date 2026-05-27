@@ -37,6 +37,9 @@ struct HandleImpl {
     // Handle for fused permute
     torch::Tensor dense_chunk_layout;
     torch::Tensor dense_to_expert_map;
+
+    // Host copy of global routing map for CC hint updates on combine (optional)
+    torch::Tensor global_routing_map_host;
 };
 
 class Executor {

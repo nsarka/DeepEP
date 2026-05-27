@@ -18,6 +18,8 @@ public:
     void update_config(BufferConfig config) override;
     void allocate_buffers() override;
     void destroy() override;
+    void update_cc_hints_from_routing(torch::Tensor global_routing_map, int64_t num_of_tokens_per_rank,
+                                      uint32_t phase) override {}
 
     InterNodeDispatchBuffers& get_dispatch_buffers() override { return dispatch_buffers; }
     InterNodeCombineBuffers& get_combine_buffers() override { return combine_buffers; }

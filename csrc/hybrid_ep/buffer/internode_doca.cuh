@@ -17,6 +17,7 @@
 #include "infiniband/verbs.h"
 #include "infiniband/mlx5dv.h"
 #include "coordinator.cuh"
+#include "buffer/internode_cc_hints.cuh"
 #include "backend/topo_detection.cuh"
 #include "backend/ibvcore.h"
 #include "utils.cuh"
@@ -122,14 +123,16 @@ doca_verbs_ah_attr_t *setup_qp_attr_for_modify(struct ibv_port_attr *port_attr,
                                                struct remote_info *l_info, struct remote_info *r_info,
                                                doca_dev_t *doca_net_dev);
 int doca_gpunetio_test_change_qp_state(struct doca_gpu_verbs_qp_hl *qp,
-                                       doca_verbs_qp_attr_t *qp_attr, int attr_mask);
+                                       doca_verbs_qp_attr_t *qp_attr, int attr_mask,
+                                       struct doca_verbs_cc_group *cc_group_opt = nullptr);
 int setup_qp_attr_and_set_qp(struct gverbs_context *g_ctx,
                              doca_dev_t *doca_net_dev,
                              struct ibv_port_attr *port_attr,
                              struct remote_info *rem_dest,
                              doca_verbs_qp_attr_t *qp_attr,
                              int num_of_blocks, int num_of_nodes,
-                             int node_rank, uint32_t qp_cnt);
+                             int node_rank, uint32_t qp_cnt,
+                             struct doca_verbs_cc_group *cc_group_opt = nullptr);
 
 class RDMACoordinator : public InterNodeCoordinator {
 public:
@@ -140,6 +143,8 @@ public:
     void update_config(BufferConfig config) override;
     void allocate_buffers() override;
     void destroy() override;
+    void update_cc_hints_from_routing(torch::Tensor global_routing_map, int64_t num_of_tokens_per_rank,
+                                      uint32_t phase) override;
 
     InterNodeDispatchBuffers& get_dispatch_buffers() override { return dispatch_buffers; }
     InterNodeCombineBuffers& get_combine_buffers() override { return combine_buffers; }
@@ -189,6 +194,8 @@ private:
     struct combine_memory_region_info_t *combine_mr_info_h = nullptr;
     struct gverbs_context combine_gverbs_ctx;
     struct combine_memory_region_info_t *combine_mr_info_d = nullptr;
+
+    InternodeCcHints cc_hints_;
 
     void exchange_remote_rdma_info(remote_info* dst, remote_info *src, int num_of_qps);
 };
