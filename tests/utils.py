@@ -12,36 +12,68 @@ import torch.distributed as dist
 from typing import Optional, Tuple, Union
 
 BLOCK_SIZE = 16
+
+def _cuda_device_rank(local_rank: int, slurm_localid: str | None) -> int:
+    """Pick CUDA device for this process (Slurm often exposes one GPU as cuda:0)."""
+    if torch.cuda.is_available() and torch.cuda.device_count() == 1:
+        return 0
+    if slurm_localid is not None:
+        return int(slurm_localid)
+    return local_rank
+
+
 def init_dist(local_rank: int, num_local_ranks: int):
     # NOTES: you may rewrite this function with your own cluster settings
     ip = os.getenv('MASTER_ADDR', '127.0.0.1')
     port = int(os.getenv('MASTER_PORT', '8361'))
-    # Slurm/srun sets SLURM_*; torchrun sets RANK/WORLD_SIZE. Accept both.
-    num_nodes = int(os.getenv(
-        'WORLD_SIZE',
-        os.getenv('SLURM_STEP_NUM_TASKS', os.getenv('PMI_SIZE', '1')),
-    ))
-    node_rank = int(os.getenv(
-        'RANK',
-        os.getenv('SLURM_PROCID', os.getenv('PMI_RANK', '0')),
-    ))
+
+    slurm_ntasks = os.getenv('SLURM_STEP_NUM_TASKS') or os.getenv('SLURM_NTASKS')
+    slurm_procid = os.getenv('SLURM_PROCID')
+    slurm_localid = os.getenv('SLURM_LOCALID')
+    slurm_nnodes = os.getenv('SLURM_NNODES')
+    slurm_nodeid = os.getenv('SLURM_NODEID')
+
+    # Slurm: one task per GPU (srun --ntasks-per-node=K, test --num-processes 1).
+    if slurm_ntasks is not None and slurm_procid is not None and num_local_ranks == 1:
+        world_size = int(slurm_ntasks)
+        rank = int(slurm_procid)
+        device_rank = _cuda_device_rank(local_rank, slurm_localid)
+    # Slurm: one task per node, torch.multiprocessing.spawn for local GPUs.
+    elif slurm_nnodes is not None and slurm_nodeid is not None and int(slurm_nnodes) * num_local_ranks > int(
+            slurm_ntasks or slurm_nnodes):
+        num_nodes = int(slurm_nnodes)
+        node_rank = int(slurm_nodeid)
+        world_size = num_nodes * num_local_ranks
+        rank = node_rank * num_local_ranks + local_rank
+        device_rank = local_rank
+    # torchrun / manual RANK+WORLD_SIZE
+    elif os.getenv('RANK') is not None and os.getenv('WORLD_SIZE') is not None:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        device_rank = int(os.environ.get('LOCAL_RANK', local_rank))
+    else:
+        num_nodes = int(os.getenv('WORLD_SIZE', '1'))
+        node_rank = int(os.getenv('RANK', '0'))
+        world_size = num_nodes * num_local_ranks
+        rank = node_rank * num_local_ranks + local_rank
+        device_rank = local_rank
 
     sig = inspect.signature(dist.init_process_group)
     params = {
         'backend': 'nccl',
         'init_method': f'tcp://{ip}:{port}',
-        'world_size': num_nodes * num_local_ranks,
-        'rank': node_rank * num_local_ranks + local_rank,
+        'world_size': world_size,
+        'rank': rank,
     }
     if 'device_id' in sig.parameters:
         # noinspection PyTypeChecker
-        params['device_id'] = torch.device(f'cuda:{local_rank}')
+        params['device_id'] = torch.device(f'cuda:{device_rank}')
     dist.init_process_group(**params)
     torch.set_default_dtype(torch.bfloat16)
     torch.set_default_device('cuda')
-    torch.cuda.set_device(local_rank)
+    torch.cuda.set_device(device_rank)
 
-    return dist.get_rank(), dist.get_world_size(), dist.new_group(list(range(num_local_ranks * num_nodes)))
+    return dist.get_rank(), dist.get_world_size(), dist.new_group(list(range(world_size)))
 
 
 def calc_diff(x: torch.Tensor, y: torch.Tensor):

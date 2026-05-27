@@ -466,7 +466,9 @@ def test_main(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                 NUM_OF_NODES = buffer.num_of_nodes
                 NUM_OF_EXPERTS = NUM_LOCAL_EXPERTS * NUM_OF_RANKS_PER_NODE * NUM_OF_NODES
             else:
-                NUM_OF_RANKS_PER_NODE = args.num_processes
+                NUM_OF_RANKS_PER_NODE = int(
+                    os.environ.get('SLURM_NTASKS_PER_NODE', str(args.num_processes))
+                )
                 NUM_OF_NODES = group.size() // NUM_OF_RANKS_PER_NODE
                 NUM_OF_EXPERTS = NUM_LOCAL_EXPERTS * NUM_OF_RANKS_PER_NODE * NUM_OF_NODES
 
@@ -488,4 +490,7 @@ if __name__ == "__main__":
     parser.add_argument('--nsys-profile', action='store_true', default=False,
                        help='benchmark with nsys profile or not (default: False)')
     args = parser.parse_args()
-    torch.multiprocessing.spawn(test_main, args=(args.num_processes, args), nprocs=args.num_processes)
+    if args.num_processes == 1:
+        test_main(0, 1, args)
+    else:
+        torch.multiprocessing.spawn(test_main, args=(args.num_processes, args), nprocs=args.num_processes)
