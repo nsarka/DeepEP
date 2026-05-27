@@ -109,12 +109,67 @@ static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
   return v;
 }
 
+static void log_cc_caps_queried(const CcCapsParsed &caps, int node_rank, int local_rank) {
+  fprintf(stderr,
+          "[Hybrid-EP] CC caps queried (node_rank=%d local_rank=%d): vendor_id=0x%x version=0x%x "
+          "hint_fields=0x%llx cc_algo_slot_bitmap=0x%x\n",
+          node_rank, local_rank, caps.vendor_id, caps.version,
+          static_cast<unsigned long long>(caps.hint_fields), caps.cc_algo_slot_bitmap);
+}
+
+static void log_cc_hints_set(uint32_t phase, int node_rank, int local_rank,
+                             const spcx_cc_hint_data &hint, uint8_t preferred_slot,
+                             uint32_t requested_qps_per_dst, uint32_t computed_incast) {
+  fprintf(stderr,
+          "[Hybrid-EP] CC hints set (phase=%u %s, node_rank=%d, local_rank=%d): "
+          "field_mask=0x%08x incast_factor=%u qps_per_dst=%u cc_slot=%u tx_priority=%u "
+          "topology_latency=%u clear_cc_ctx=%u (preferred_slot=%u, requested qps_per_dst=%u, "
+          "computed incast=%u)\n",
+          phase, (phase == 0 ? "dispatch" : "combine"), node_rank, local_rank, hint.field_mask,
+          hint.incast_factor, hint.qps_per_dst, hint.cc_slot, hint.tx_priority,
+          hint.topology_latency, hint.clear_cc_ctx, preferred_slot, requested_qps_per_dst,
+          computed_incast);
+}
+
+static void log_cc_query_failure(doca_dev_t *net_dev, doca_sdk_wrapper_error_t err) {
+  const char *sdk_path = std::getenv("DOCA_SDK_LIB_PATH");
+  fprintf(stderr, "[Hybrid-EP] CC hints: doca_verbs_sdk_wrapper_query_cc_group_caps failed");
+  switch (err) {
+    case DOCA_SDK_WRAPPER_NOT_SUPPORTED:
+      fprintf(stderr, " (DOCA_SDK_LIB_PATH is unset).\n");
+      break;
+    case DOCA_SDK_WRAPPER_NOT_FOUND:
+      fprintf(stderr,
+              " (closed DOCA SDK not loaded or missing CC group symbols). "
+              "DOCA_SDK_LIB_PATH=%s\n",
+              sdk_path ? sdk_path : "(unset)");
+      break;
+    case DOCA_SDK_WRAPPER_API_INVALID_VALUE:
+      fprintf(stderr,
+              " (sdk_context is NULL — doca_verbs_dev_open used open-source path, not closed SDK). "
+              "dev_type=%s DOCA_SDK_LIB_PATH=%s\n",
+              (net_dev != nullptr && net_dev->type == DOCA_VERBS_SDK_LIB_TYPE_SDK) ? "SDK" : "OPEN",
+              sdk_path ? sdk_path : "(unset)");
+      fprintf(stderr,
+              "[Hybrid-EP] CC hints: export DOCA_SDK_LIB_PATH to Mellanox DOCA lib dir and run with "
+              "DOCA_GPUNETIO_LOG=6; look for \"DOCA SDK is in use\" at doca_verbs_dev_open.\n");
+      break;
+    case DOCA_SDK_WRAPPER_API_ERROR:
+      fprintf(stderr, " (doca_verbs_query_cc_group_caps failed on the NIC/SDK).\n");
+      break;
+    default:
+      fprintf(stderr, " (wrapper err=%d).\n", static_cast<int>(err));
+      break;
+  }
+}
+
 static bool query_cc_hints_caps(doca_dev_t *net_dev, CcCapsParsed *out) {
   memset(out, 0, sizeof(*out));
   void *caps_obj = nullptr;
-  if (doca_verbs_sdk_wrapper_query_cc_group_caps(net_dev, &caps_obj) != DOCA_SDK_WRAPPER_SUCCESS ||
-      caps_obj == nullptr) {
-    fprintf(stderr, "[Hybrid-EP] CC hints: doca_verbs_sdk_wrapper_query_cc_group_caps failed\n");
+  doca_sdk_wrapper_error_t w =
+      doca_verbs_sdk_wrapper_query_cc_group_caps(net_dev, &caps_obj);
+  if (w != DOCA_SDK_WRAPPER_SUCCESS || caps_obj == nullptr) {
+    log_cc_query_failure(net_dev, w);
     return false;
   }
   const void *blob = nullptr;
@@ -261,10 +316,13 @@ static uint32_t routing_max_peer_nodes_with_traffic(const int *per_rank_counts, 
 }
 
 static bool cc_init_groups(doca_dev_t *net_dev, void **out_disp_grp, void **out_comb_grp, void **out_attr_d,
-                           void **out_attr_c, int node_rank) {
+                           void **out_attr_c, int node_rank, int local_rank) {
   memset(&g_cc_caps, 0, sizeof(g_cc_caps));
   if (!query_cc_hints_caps(net_dev, &g_cc_caps)) {
     return false;
+  }
+  if (g_cc_caps.valid) {
+    log_cc_caps_queried(g_cc_caps, node_rank, local_rank);
   }
   if (!g_cc_caps.valid || g_cc_caps.vendor_id != CC_HINTS_VENDOR_ID_NVIDIA_SPCX ||
       (g_cc_caps.version != CC_HINTS_VERSION_SPCX_V1 && g_cc_caps.version != CC_HINTS_VERSION_SPCX_V2)) {
@@ -352,13 +410,13 @@ static bool cc_init_groups(doca_dev_t *net_dev, void **out_disp_grp, void **out_
 
 }  // namespace
 
-bool InternodeCcHints::try_init(doca_dev_t *net_dev, int node_rank) {
+bool InternodeCcHints::try_init(doca_dev_t *net_dev, int node_rank, int local_rank) {
   fini();
   if (!cc_env_enabled() || net_dev == nullptr) {
     return false;
   }
   if (!cc_init_groups(net_dev, &dispatch_cc_group_, &combine_cc_group_, &cc_attr_dispatch_,
-                    &cc_attr_combine_, node_rank)) {
+                    &cc_attr_combine_, node_rank, local_rank)) {
     if (node_rank == 0) {
       fprintf(stderr,
               "[Hybrid-EP] HYBRID_EP_CC_HINTS=1 but CC init failed "
@@ -367,7 +425,7 @@ bool InternodeCcHints::try_init(doca_dev_t *net_dev, int node_rank) {
     return false;
   }
   active_ = true;
-  if (node_rank == 0) {
+  if (node_rank == 0 && local_rank == 0) {
     fprintf(stderr, "[Hybrid-EP] CC hints enabled (vendor=0x%x version=0x%x hint_fields=0x%llx)\n",
             g_cc_caps.vendor_id, g_cc_caps.version,
             static_cast<unsigned long long>(g_cc_caps.hint_fields));
@@ -430,6 +488,8 @@ void InternodeCcHints::push_routing_from_global_map(const bool *global_routing_m
   spcx_cc_hint_data hint{};
   const uint8_t preferred_slot = pick_cc_algo_slot(g_cc_caps.cc_algo_slot_bitmap);
   build_spcx_cc_hints(g_cc_caps, qps_per_dst_for_phase, incast, 0u, preferred_slot, 0u, &hint);
+  log_cc_hints_set(phase, node_rank, local_rank, hint, preferred_slot, qps_per_dst_for_phase,
+                   incast);
 
   if (cc_group_update_hints(cc_group, cc_attr, &hint) != DOCA_SUCCESS) {
     fprintf(stderr,

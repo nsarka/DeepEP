@@ -204,6 +204,14 @@ Optional overrides:
 - `DOCA_GPUNETIO_LITE_LIB` — path to `libdoca_gpunetio_host.so` (default: written to `deep_ep/backend/doca_gpunetio_lib_path` at install time)
 - `DOCA_SDK_LIB_PATH` — runtime path to closed DOCA SDK libs (enables `doca_verbs_*_sdk_wrapper` via dlopen)
 - `HYBRID_EP_CC_HINTS=1` — enable NVIDIA SPC-X CC hint groups (dispatch + combine); requires `DOCA_SDK_LIB_PATH` with closed DOCA Verbs SDK. Hints are derived from the global routing map (`incast_factor`, `qps_per_dst`) and updated before each dispatch/combine via `doca_verbs_sdk_wrapper_cc_group_modify`. QPs attach to the CC group on INIT→RTR (`doca_verbs_qp_attr_set_cc_group`).
+
+**CC hints troubleshooting:** If you see `query_cc_group_caps failed`, Hybrid-EP is still using the open-source `doca_verbs_dev_open` path (`sdk_context` is NULL). RDMA can work without CC; CC needs the closed SDK loaded at `doca_verbs_dev_open` time:
+
+1. Export `DOCA_SDK_LIB_PATH` to the directory containing `libdoca_common.so` and `libdoca_verbs.so` on **every** Slurm rank (`srun --export=ALL`).
+2. Put that path on `LD_LIBRARY_PATH` (see `deepep-run.sh` / `hybrid-ep/test/run.sh`).
+3. **Match `libmlx5` / `libibverbs` versions:** `libdoca_common.so` is linked against Mellanox rdma-core (e.g. `MLX5_1.25`). If `dlopen` fails with `version MLX5_1.25 not found`, prepend the DOCA tarball’s userspace RDMA libs: `export DOCA_USR_LIB=$DOCA_EXTRACTED/usr/lib/x86_64-linux-gnu` and `LD_LIBRARY_PATH=$DOCA_USR_LIB:...` (nodes can have different system `libmlx5` versions, so one rank may load SDK while another does not).
+4. Run with `DOCA_GPUNETIO_LOG=6` and confirm logs contain `DOCA SDK is in use` from `doca_verbs_sdk_wrapper_dev_open_from_pd` (not `DOCA SDK libraries not found`) on **every** rank.
+5. Rebuild/install DeepEP after source changes (`pip install --no-build-isolation -e .` with `HYBRID_EP_MULTINODE=1`).
  
 > RDMA Core requirement: install `rdma-core` v60.0 ([reference](https://github.com/linux-rdma/rdma-core/tree/v60.0)), and the latest release is also recommended ([linux-rdma/rdma-core](https://github.com/linux-rdma/rdma-core.git)).
 

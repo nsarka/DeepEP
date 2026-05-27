@@ -13,7 +13,7 @@ struct doca_verbs_cc_group;
 /** DOCA Verbs SDK CC hint groups (SPC-X), gated by HYBRID_EP_CC_HINTS=1. */
 class InternodeCcHints {
 public:
-  bool try_init(doca_dev_t *net_dev, int node_rank);
+  bool try_init(doca_dev_t *net_dev, int node_rank, int local_rank);
   void fini();
 
   bool active() const { return active_; }

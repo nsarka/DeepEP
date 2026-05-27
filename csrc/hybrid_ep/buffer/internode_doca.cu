@@ -406,7 +406,20 @@ void RDMACoordinator::init(
   get_gpu_handler(gpu_handler, ib_context, local_device_idx);
   assert(doca_gpu_create(gpu_handler->pci_bus_id, &doca_gpu_dev) == DOCA_SUCCESS);
   assert(doca_verbs_dev_open(ib_pd, &doca_net_dev) == DOCA_SUCCESS);
-  cc_hints_.try_init(doca_net_dev, node_rank);
+  {
+    const char *cc_env = std::getenv("HYBRID_EP_CC_HINTS");
+    if (cc_env != nullptr && cc_env[0] == '1' && node_rank == 0 &&
+        doca_net_dev->type != DOCA_VERBS_SDK_LIB_TYPE_SDK) {
+      const char *sdk_path = std::getenv("DOCA_SDK_LIB_PATH");
+      fprintf(stderr,
+              "[Hybrid-EP] HYBRID_EP_CC_HINTS=1 but doca_verbs_dev_open used open-source DOCA "
+              "(not closed SDK). CC hints require DOCA_SDK_LIB_PATH with libdoca_verbs.so that "
+              "dlopens successfully on every rank (DOCA_GPUNETIO_LOG=6). "
+              "DOCA_SDK_LIB_PATH=%s\n",
+              sdk_path ? sdk_path : "(unset)");
+    }
+  }
+  cc_hints_.try_init(doca_net_dev, node_rank, local_rank);
   mr_access_flag = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
                       IBV_ACCESS_REMOTE_ATOMIC | IBV_ACCESS_RELAXED_ORDERING;
   
