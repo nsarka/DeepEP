@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
 // All rights reserved
 #include "buffer/internode_doca.cuh"
+#include <arpa/inet.h>
 #include <sstream>
 #include <cstdlib>
 #include <unordered_map>
@@ -188,6 +189,12 @@ int create_and_place_qps(struct gverbs_context *g_ctx,
   return status;
 }
 
+static bool gid_is_ipv4_mapped(const union ibv_gid *gid) {
+  const struct in6_addr *a = (const struct in6_addr *)gid->raw;
+  return ((a->s6_addr32[0] | a->s6_addr32[1]) |
+          (a->s6_addr32[2] ^ htonl(0x0000ffff))) == 0UL;
+}
+
 int setup_qp_attr_for_modify(struct ibv_port_attr *port_attr, struct doca_verbs_qp_attr *qp_attr, 
   struct remote_info *l_info, struct remote_info *r_info,
   struct ibv_context *ib_context) {
@@ -199,19 +206,23 @@ int setup_qp_attr_for_modify(struct ibv_port_attr *port_attr, struct doca_verbs_
   assert(status == 0);
   if (port_attr->link_layer == IBV_LINK_LAYER_INFINIBAND) {
     status = doca_verbs_ah_attr_set_addr_type(ah, DOCA_VERBS_ADDR_TYPE_IB_NO_GRH);
+    assert(status == 0);
+    status = doca_verbs_ah_attr_set_dlid(ah, r_info->lid);
+    assert(status == 0);
+    status = doca_verbs_ah_attr_set_hop_limit(ah, DEF_IB_HOP_LIMIT);
   } else {
-    status = doca_verbs_ah_attr_set_addr_type(ah, DOCA_VERBS_ADDR_TYPE_IPv4);
+    enum doca_verbs_addr_type addr_type =
+        gid_is_ipv4_mapped(&r_info->gid) ? DOCA_VERBS_ADDR_TYPE_IPv4 : DOCA_VERBS_ADDR_TYPE_IPv6;
+    status = doca_verbs_ah_attr_set_addr_type(ah, addr_type);
+    assert(status == 0);
+    status = doca_verbs_ah_attr_set_hop_limit(ah, DEF_ROCE_HOP_LIMIT);
   }
-  assert(status == 0);
-  status = doca_verbs_ah_attr_set_dlid(ah, r_info->lid);
   assert(status == 0);
   status = doca_verbs_ah_attr_set_gid(ah, *((struct doca_verbs_gid *)(&r_info->gid)));
   assert(status == 0);
-  status = doca_verbs_ah_attr_set_sl(ah, 0);
+  status = doca_verbs_ah_attr_set_sl(ah, SL);
   assert(status == 0);
   status = doca_verbs_ah_attr_set_sgid_index(ah, l_info->gid_index);
-  assert(status == 0);
-  status = doca_verbs_ah_attr_set_hop_limit(ah, DEF_HOP_LIMIT);
   assert(status == 0);
   status = doca_verbs_ah_attr_set_traffic_class(ah, DEF_IB_TC);
   assert(status == 0);

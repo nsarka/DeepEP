@@ -16,8 +16,15 @@ def init_dist(local_rank: int, num_local_ranks: int):
     # NOTES: you may rewrite this function with your own cluster settings
     ip = os.getenv('MASTER_ADDR', '127.0.0.1')
     port = int(os.getenv('MASTER_PORT', '8361'))
-    num_nodes = int(os.getenv('WORLD_SIZE', 1))
-    node_rank = int(os.getenv('RANK', 0))
+    # Slurm/srun sets SLURM_*; torchrun sets RANK/WORLD_SIZE. Accept both.
+    num_nodes = int(os.getenv(
+        'WORLD_SIZE',
+        os.getenv('SLURM_STEP_NUM_TASKS', os.getenv('PMI_SIZE', '1')),
+    ))
+    node_rank = int(os.getenv(
+        'RANK',
+        os.getenv('SLURM_PROCID', os.getenv('PMI_RANK', '0')),
+    ))
 
     sig = inspect.signature(dist.init_process_group)
     params = {

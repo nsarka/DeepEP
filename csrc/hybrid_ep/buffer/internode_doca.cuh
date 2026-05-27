@@ -43,8 +43,10 @@ enum memory_type {
 };
 
 constexpr int32_t CONNECTION_TYPE = RC;
-constexpr int32_t DEF_HOP_LIMIT = 255;
-constexpr int32_t DEF_IB_TC = 0;
+// IB NO_GRH paths do not use hop_limit; RoCE requires a non-zero TTL (see DOCA verbs tests).
+constexpr int32_t DEF_IB_HOP_LIMIT = 0;
+constexpr int32_t DEF_ROCE_HOP_LIMIT = 255;
+constexpr int32_t DEF_IB_TC = 72;
 constexpr int32_t DEF_RX_RDMA = 128;
 constexpr int32_t DEF_TX_BW = 512;
 constexpr int32_t EQ_NUM = 0;
@@ -57,7 +59,7 @@ constexpr int32_t MTU = 0;
 constexpr short PKEY_INDEX = 0;
 constexpr uint8_t QP_TIMEOUT = 22;
 constexpr uint8_t SL = 0;
-constexpr uint8_t TRAFFIC_CLASS = 0;
+constexpr uint8_t TRAFFIC_CLASS = 72;
 constexpr enum memory_type MEMORY_TYPE = MEMORY_CUDA;
 static const char *portStates[] = {"Nop","Down","Init","Armed","","Active Defer"};
 
