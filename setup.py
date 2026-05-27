@@ -42,10 +42,53 @@ def to_nvcc_gencode(s: str) -> str:
     return " ".join(flags)
 
 
+def torch_arch_to_doca_cuda_arch(arch_list: str) -> str:
+    """Map TORCH_CUDA_ARCH_LIST entry (e.g. 9.0) to doca-gpunetio-lite CUDA_ARCH (e.g. 90)."""
+    first = next(p for p in re.split(r'[,\s;]+', arch_list.strip()) if p)
+    m = re.fullmatch(r'(\d+)\.(\d+)([A-Za-z]?)', first)
+    if not m:
+        raise ValueError(f"Invalid TORCH_CUDA_ARCH_LIST entry: {first}")
+    major, minor, suf = m.groups()
+    return f"{int(major)}{int(minor)}{suf.lower()}"
+
+
+def resolve_doca_gpunetio_lite_dir(current_dir: str) -> str:
+    env_dir = os.getenv("DOCA_GPUNETIO_LITE", "").strip()
+    if env_dir:
+        return os.path.abspath(env_dir)
+    candidates = [
+        os.path.join(current_dir, "third-party", "doca-gpunetio-lite"),
+        os.path.join(current_dir, "..", "hybrid-ep", "doca-gpunetio-lite"),
+    ]
+    for path in candidates:
+        if os.path.isdir(os.path.join(path, "include")):
+            return os.path.abspath(path)
+    return os.path.abspath(candidates[0])
+
+
+def build_doca_gpunetio_lite(doca_dir: str, cuda_home: str, cuda_arch: str) -> str:
+    """Build upstream doca-gpunetio-lite and return the lib directory path."""
+    if not os.path.isdir(os.path.join(doca_dir, "include")):
+        raise FileNotFoundError(
+            f"doca-gpunetio-lite not found at {doca_dir}. "
+            "Set DOCA_GPUNETIO_LITE to an existing checkout, e.g.\n"
+            "  export DOCA_GPUNETIO_LITE=/path/to/hybrid-ep/doca-gpunetio-lite\n"
+            "Or register the submodule (see docs/README_Hybrid-EP.md)."
+        )
+    subprocess.run(
+        ["make", "-C", doca_dir, "-j", "lib", f"CUDA_ARCH={cuda_arch}", f"CUDA_HOME={cuda_home}"],
+        check=True,
+    )
+    lib_dir = os.path.abspath(os.path.join(doca_dir, "lib"))
+    if not os.path.isfile(os.path.join(lib_dir, "libdoca_gpunetio_host.so")):
+        raise FileNotFoundError(f"libdoca_gpunetio_host.so not found under {lib_dir}")
+    return lib_dir
+
+
 def get_extension_hybrid_ep_cpp():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     enable_multinode = os.getenv("HYBRID_EP_MULTINODE", "0").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
-    # NIXL is opt-in and disabled by default; the DOCA/NCCL path is the default when multinode is enabled.
+    # NIXL is opt-in and disabled by default; the DOCA gpunetio-lite path is the default when multinode is enabled.
     use_nixl = os.getenv("USE_NIXL", "0").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
     # Default to Blackwell series
@@ -102,7 +145,7 @@ def get_extension_hybrid_ep_cpp():
         print(f'Multinode enabled: use_nixl={use_nixl} (USE_NIXL={os.getenv("USE_NIXL", "0")})')
         if use_nixl:
             # NIXL path: use NIXL connector instead of DOCA
-            print('  -> NIXL path: skipping NCCL/DOCA build')
+            print('  -> NIXL path: skipping doca-gpunetio-lite build')
             compile_args["nvcc"].append("-DUSE_NIXL")
             sources.extend([
                 "csrc/hybrid_ep/buffer/internode_nixl.cu",
@@ -134,52 +177,38 @@ def get_extension_hybrid_ep_cpp():
                 include_dirs.append(os.path.join(rdma_core_dir, "include"))
                 library_dirs.append(os.path.join(rdma_core_dir, "lib"))
         else:
-            # DOCA path: use RDMA coordinator (requires NCCL submodule + DOCA)
-            print('  -> DOCA path: building NCCL/DOCA')
+            # DOCA path: upstream doca-gpunetio-lite (replaces NCCL-bundled doca-gpunetio)
+            print('  -> DOCA path: building doca-gpunetio-lite')
             sources.extend(["csrc/hybrid_ep/buffer/internode_doca.cu"])
             rdma_core_dir = os.getenv("RDMA_CORE_HOME", "")
-            nccl_dir = os.path.join(current_dir, "third-party/nccl")
+            doca_dir = resolve_doca_gpunetio_lite_dir(current_dir)
+            cuda_home = os.getenv("CUDA_HOME", "/usr/local/cuda")
+            cuda_arch = torch_arch_to_doca_cuda_arch(os.environ["TORCH_CUDA_ARCH_LIST"])
+            doca_lib_dir = build_doca_gpunetio_lite(doca_dir, cuda_home, cuda_arch)
+            doca_inc_dir = os.path.join(doca_dir, "include")
+            doca_backend_inc = os.path.join(current_dir, "deep_ep/backend/doca-gpunetio/include")
+            doca_home = os.getenv("DOCA_HOME", "/opt/mellanox/doca")
+
             compile_args["nvcc"].append(f"-DRDMA_CORE_HOME=\"{rdma_core_dir}\"")
             extra_link_args.append(f"-l:libnvidia-ml.so.1")
 
-            subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=current_dir)
-            subprocess.run(
-                ["make", "-j", "src.build", f"NVCC_GENCODE={to_nvcc_gencode(os.environ['TORCH_CUDA_ARCH_LIST'])}"],
-                cwd=nccl_dir,
-                check=True,
-            )
-            include_dirs.append(os.path.join(nccl_dir, "src/transport/net_ib/gdaki/doca-gpunetio/include"))
-            include_dirs.append(os.path.join(rdma_core_dir, "include"))
-            library_dirs.append(os.path.join(rdma_core_dir, "lib"))
-            runtime_library_dirs.append(os.path.join(rdma_core_dir, "lib"))
-            libraries.append("mlx5")
-            libraries.append("ibverbs")
-            shutil.copytree(
-                os.path.join(nccl_dir, "src/transport/net_ib/gdaki/doca-gpunetio/include"),
-                os.path.join(current_dir, "deep_ep/backend/nccl/include"),
-                dirs_exist_ok=True
-            )
-            shutil.copytree(
-                os.path.join(nccl_dir, "build/obj/transport/net_ib/gdaki/doca-gpunetio"),
-                os.path.join(current_dir, "deep_ep/backend/nccl/obj"),
-                dirs_exist_ok=True
-            )
-            DOCA_OBJ_PATH = os.path.join(current_dir, "deep_ep/backend/nccl/obj")
-            extra_objects = [
-                os.path.join(DOCA_OBJ_PATH, "doca_gpunetio.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_gpunetio_high_level.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_cuda_wrapper.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_device_attr.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_ibv_wrapper.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_mlx5dv_wrapper.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_qp.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_cq.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_srq.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_uar.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_verbs_umem.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_gpunetio_gdrcopy.o"),
-                os.path.join(DOCA_OBJ_PATH, "doca_gpunetio_log.o"),
-            ]
+            include_dirs.extend([
+                doca_inc_dir,
+                os.path.join(doca_dir, "src"),
+                os.path.join(doca_home, "include"),
+            ])
+            if rdma_core_dir:
+                include_dirs.append(os.path.join(rdma_core_dir, "include"))
+                library_dirs.append(os.path.join(rdma_core_dir, "lib"))
+                runtime_library_dirs.append(os.path.join(rdma_core_dir, "lib"))
+            libraries.extend(["mlx5", "ibverbs", "doca_gpunetio_host"])
+            library_dirs.append(doca_lib_dir)
+            runtime_library_dirs.append(doca_lib_dir)
+            extra_link_args.append(f"-Wl,-rpath,{doca_lib_dir}")
+
+            shutil.copytree(doca_inc_dir, doca_backend_inc, dirs_exist_ok=True)
+            with open(os.path.join(current_dir, "deep_ep/backend/doca_gpunetio_lib_path"), "w") as f:
+                f.write(doca_lib_dir + "\n")
 
 
     print(f'Build summary:')

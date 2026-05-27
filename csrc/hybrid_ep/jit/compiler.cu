@@ -4,6 +4,7 @@
 #include "compiler.cuh"
 #include <any>
 #include <cstdio>
+#include <fstream>
 #include <unistd.h>
 #include <pwd.h>
 #include <sys/types.h>
@@ -15,6 +16,30 @@ inline std::string get_env(std::string name) {
         return std::string("");
     }
     return std::string(env);
+}
+
+inline std::string trim(std::string s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) {
+        s.pop_back();
+    }
+    return s;
+}
+
+inline std::string get_doca_gpunetio_lite_lib(const std::string& base_path) {
+    std::string doca_lib = get_env("DOCA_GPUNETIO_LITE_LIB");
+    if (!doca_lib.empty()) {
+        return doca_lib;
+    }
+    std::ifstream in(base_path + "/backend/doca_gpunetio_lib_path");
+    if (in.good()) {
+        std::string line;
+        std::getline(in, line);
+        line = trim(line);
+        if (!line.empty()) {
+            return line;
+        }
+    }
+    return "";
 }
 
 std::string get_jit_dir() {
@@ -77,22 +102,13 @@ NVCCCompiler::NVCCCompiler(std::string base_path, std::string comm_id):
         include += " -I" + rdma_core_home + "/include ";
         library += " -L" + rdma_core_home + "/lib ";
     }
-    include += " -I" + base_path + "/backend/nccl/include ";
+    include += " -I" + base_path + "/backend/doca-gpunetio/include ";
     library += " -lmlx5 -libverbs ";
-    std::string doca_obj_path = base_path + "/backend/nccl/obj";
-    objs = doca_obj_path + "/doca_gpunetio.o "
-        + doca_obj_path + "/doca_gpunetio_high_level.o "
-        + doca_obj_path + "/doca_verbs_cuda_wrapper.o "
-        + doca_obj_path + "/doca_verbs_device_attr.o "
-        + doca_obj_path + "/doca_verbs_ibv_wrapper.o "
-        + doca_obj_path + "/doca_verbs_mlx5dv_wrapper.o "
-        + doca_obj_path + "/doca_verbs_qp.o "
-        + doca_obj_path + "/doca_verbs_cq.o "
-        + doca_obj_path + "/doca_verbs_srq.o "
-        + doca_obj_path + "/doca_verbs_uar.o "
-        + doca_obj_path + "/doca_verbs_umem.o "
-        + doca_obj_path + "/doca_gpunetio_gdrcopy.o "
-        + doca_obj_path + "/doca_gpunetio_log.o ";
+    std::string doca_lib = get_doca_gpunetio_lite_lib(base_path);
+    if (!doca_lib.empty()) {
+        library += " -L" + doca_lib + " -ldoca_gpunetio_host ";
+        library += " -Xlinker -rpath -Xlinker " + doca_lib + " ";
+    }
 #endif
 #endif
 
@@ -139,7 +155,7 @@ std::string NVCCCompiler::build(std::string code, std::string signature, int loc
 #ifdef USE_NIXL
         compile_command = nvcc_path + " " + inter_node_flags + extra_flags + " " + source_path + " -o " + output_path;
 #else
-        compile_command = nvcc_path + " " + inter_node_flags + extra_flags + " " + source_path + " " + objs + " -o " + output_path;
+        compile_command = nvcc_path + " " + inter_node_flags + extra_flags + " " + source_path + " -o " + output_path;
 #endif
     }else {
         compile_command = nvcc_path + " " + intra_node_flags + extra_flags + " " + source_path + " -o " + output_path;

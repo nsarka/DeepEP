@@ -15,7 +15,7 @@
  
  namespace hybrid_ep {
    namespace {
-   static const int IB_GID_INDEX = -1;
+   static const int IB_GID_INDEX = 3;
    static const int IB_ROUTABLE_FLID_GID_INDEX = 1;
    static const int IB_ROCE_VERSION_NUM = 2;
    static const sa_family_t DEFAULT_FAMILY = AF_INET;
@@ -185,6 +185,10 @@
    }
  
  static ncclResult_t ncclIbGetGidIndex(struct ibv_context *context, uint8_t portNum, struct ibv_port_attr* portAttr, int *gidIndex) {
+   if (IB_GID_INDEX >= 0) {
+     *gidIndex = IB_GID_INDEX;
+     return ncclSuccess;
+   }
    int gidTblLen = portAttr->gid_tbl_len;
    //for IB, choose GID Index that will have routable FLID if present
    if (portAttr->link_layer == IBV_LINK_LAYER_INFINIBAND) {

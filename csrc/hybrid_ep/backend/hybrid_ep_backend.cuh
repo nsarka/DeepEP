@@ -1171,8 +1171,9 @@ inline __device__ void N2N_warp_group_device_function(const int node_rank,
         doca_gpu_dev_verbs_mark_wqes_ready<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA>(qp, base_wqe_idx, curr_wqe_idx);
         doca_gpu_dev_verbs_submit_db<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
                                           DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
-                                          DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT,
-                                          DOCA_GPUNETIO_VERBS_QP_SQ>(qp, (curr_wqe_idx + 1));
+                                          DOCA_GPUNETIO_VERBS_QP_SQ>(
+            qp, static_cast<uint64_t>(curr_wqe_idx + 1),
+            DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT);
       }
       __syncwarp();
     }
@@ -2858,8 +2859,9 @@ inline __device__ void inter_node_N2N_warp_group_device_function(const int node_
       doca_gpu_dev_verbs_mark_wqes_ready<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA>(qp, base_wqe_idx, curr_wqe_idx);
       doca_gpu_dev_verbs_submit_db<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
                                         DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
-                                        DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT,
-                                        DOCA_GPUNETIO_VERBS_QP_SQ>(qp, (curr_wqe_idx + 1));
+                                        DOCA_GPUNETIO_VERBS_QP_SQ>(
+          qp, static_cast<uint64_t>(curr_wqe_idx + 1),
+          DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT);
     }
     __syncwarp();
   }
@@ -4219,8 +4221,9 @@ __global__ void rdma_sync_kernel(const int num_of_nodes,
     doca_gpu_dev_verbs_mark_wqes_ready<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA>(qp, wqe_idx, wqe_idx);
     doca_gpu_dev_verbs_submit_db<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
                                       DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
-                                      DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT,
-                                      DOCA_GPUNETIO_VERBS_QP_SQ>(qp, (wqe_idx + 1));
+                                      DOCA_GPUNETIO_VERBS_QP_SQ>(
+        qp, static_cast<uint64_t>(wqe_idx + 1),
+        DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT);
     int status = doca_gpu_dev_verbs_poll_cq<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
                                             DOCA_GPUNETIO_VERBS_QP_SQ>(
                                             doca_gpu_dev_verbs_qp_get_cq_sq(qp), 1);

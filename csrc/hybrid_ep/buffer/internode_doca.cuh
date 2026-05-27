@@ -63,7 +63,7 @@ constexpr uint8_t TRAFFIC_CLASS = 72;
 constexpr enum memory_type MEMORY_TYPE = MEMORY_CUDA;
 static const char *portStates[] = {"Nop","Down","Init","Armed","","Active Defer"};
 
-struct doca_gpu_mtable {
+struct hybrid_ep_gpu_mtable {
     uintptr_t base_addr;
     size_t size_orig;
     uintptr_t align_addr_gpu;
@@ -73,9 +73,10 @@ struct doca_gpu_mtable {
     void *gdr_mh;
 };
 
-struct doca_gpu {
+struct hybrid_ep_gpu_ctx {
+  char pci_bus_id[256];
   CUdevice cuda_dev;
-  std::unordered_map<uintptr_t, struct doca_gpu_mtable *> *mtable;
+  std::unordered_map<uintptr_t, struct hybrid_ep_gpu_mtable *> *mtable;
   bool support_gdrcopy;
   bool support_dmabuf;
   bool support_wq_gpumem;
@@ -89,7 +90,7 @@ struct gverbs_context {
     int pdn;
     union ibv_gid gid;
     struct doca_gpu_verbs_qp_init_attr_hl *qp_init_attr;
-    struct doca_verbs_qp_attr *qp_attr;
+    doca_verbs_qp_attr_t *qp_attr;
     struct doca_gpu_verbs_qp_hl **qp_hls;
     struct doca_gpu_dev_verbs_qp **d_qps_gpu;
 };
@@ -111,23 +112,24 @@ struct remote_info {
 };
 
 ibv_device *ctx_find_dev(const char *ib_devname);
-int get_gpu_handler(struct doca_gpu *handler, struct ibv_context *ib_context, int local_rank);
+int get_gpu_handler(struct hybrid_ep_gpu_ctx *handler, struct ibv_context *ib_context, int local_rank);
 void setup_qp_init_attr(struct doca_gpu_verbs_qp_init_attr_hl *qp_init_attr,
-                        struct doca_gpu *gpu_handler, struct ibv_pd *ib_pd, int tx_depth);
+                        doca_gpu_t *gpu_dev, doca_dev_t *net_dev, struct ibv_pd *ib_pd, int tx_depth);
 int create_and_place_qps(struct gverbs_context *g_ctx,
                          struct doca_gpu_verbs_qp_init_attr_hl *qp_init_attr, int num_qps);
-int setup_qp_attr_for_modify(struct ibv_port_attr *port_attr, struct doca_verbs_qp_attr *qp_attr,
-                                    struct remote_info *l_info, struct remote_info *r_info,
-                                    struct ibv_context *ib_context);
+doca_verbs_ah_attr_t *setup_qp_attr_for_modify(struct ibv_port_attr *port_attr,
+                                               doca_verbs_qp_attr_t *qp_attr,
+                                               struct remote_info *l_info, struct remote_info *r_info,
+                                               doca_dev_t *doca_net_dev);
 int doca_gpunetio_test_change_qp_state(struct doca_gpu_verbs_qp_hl *qp,
-                                       struct doca_verbs_qp_attr *qp_attr, int attr_mask);
+                                       doca_verbs_qp_attr_t *qp_attr, int attr_mask);
 int setup_qp_attr_and_set_qp(struct gverbs_context *g_ctx,
-                                    struct ibv_context *ib_context,
-                                    struct ibv_port_attr *port_attr,
-                                    struct remote_info *rem_dest,
-                                    struct doca_verbs_qp_attr *qp_attr,
-                                    int num_of_blocks, int num_of_nodes,
-                                    int node_rank, uint32_t qp_cnt);
+                             doca_dev_t *doca_net_dev,
+                             struct ibv_port_attr *port_attr,
+                             struct remote_info *rem_dest,
+                             doca_verbs_qp_attr_t *qp_attr,
+                             int num_of_blocks, int num_of_nodes,
+                             int node_rank, uint32_t qp_cnt);
 
 class RDMACoordinator : public InterNodeCoordinator {
 public:
@@ -156,7 +158,9 @@ private:
 
     struct ibv_context *ib_context = nullptr;
     struct ibv_pd *ib_pd = nullptr;
-    struct doca_gpu *gpu_handler = nullptr;
+    struct hybrid_ep_gpu_ctx *gpu_handler = nullptr;
+    doca_gpu_t *doca_gpu_dev = nullptr;
+    doca_dev_t *doca_net_dev = nullptr;
     struct ibv_port_attr port_attr = {};
     int mr_access_flag = -1;
     bool buffer_allocated = false;

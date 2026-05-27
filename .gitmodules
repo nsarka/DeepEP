@@ -1,4 +1,4 @@
-[submodule "third-party/nccl"]
-	path = third-party/nccl
-	url = https://github.com/NVIDIA/nccl.git
-	branch = master
+[submodule "third-party/doca-gpunetio-lite"]
+	path = third-party/doca-gpunetio-lite
+	url = ssh://git@gitlab-master.nvidia.com:12051/gpucomms/doca-gpunetio-lite.git
+	branch = nsarka/cc-group-api-2

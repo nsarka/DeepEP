@@ -7,7 +7,7 @@ This document introduces the Hybrid Expert Parallel (Hybrid-EP) implementation t
 
 > **⚠️ Experimental**: NIXL-based inter-node communication is an experimental feature. **Performance is not final — this is an initial integration that brings NIXL into Hybrid-EP, and we are actively working to improve NIXL path performance toward parity with the DOCA/RDMA path.** We welcome feedback and contributions.
 
-Hybrid-EP supports [NIXL](https://github.com/ai-dynamo/nixl) (NVIDIA Inter-node eXchange Library) as an alternative inter-node communication backend alongside the existing DOCA/RDMA path. NIXL uses UCX for GPU-to-GPU RDMA transfers and does not require the NCCL submodule or DOCA SDK at build time, simplifying deployment in environments where DOCA is unavailable.
+Hybrid-EP supports [NIXL](https://github.com/ai-dynamo/nixl) (NVIDIA Inter-node eXchange Library) as an alternative inter-node communication backend alongside the existing DOCA/RDMA path. NIXL uses UCX for GPU-to-GPU RDMA transfers and does not require the doca-gpunetio-lite submodule at build time, simplifying deployment in environments where DOCA is unavailable.
 
 **Key points:**
 - Build with `USE_NIXL=1` to select the NIXL path; the default (`USE_NIXL=0`) preserves the DOCA path with no behavior change
@@ -163,7 +163,7 @@ pip install .
 ```
 
 #### Multi-node NIXL Installation (recommended when NIXL is available)
-For multi-node support with NIXL. NIXL replaces DOCA for inter-node GPU data transfers, so the DOCA SDK and NCCL submodule are not needed at build time. Note that NCCL may still be used at runtime by `torch.distributed` for collective metadata operations.
+For multi-node support with NIXL. NIXL replaces DOCA for inter-node GPU data transfers, so the doca-gpunetio-lite submodule is not needed at build time. Note that NCCL may still be used at runtime by `torch.distributed` for collective metadata operations.
 
 **Prerequisites:**
 - **NIXL** ([ai-dynamo/nixl](https://github.com/ai-dynamo/nixl)) — GPU-aware inter-node communication library. Install from source; see the NIXL README for build instructions.
@@ -185,15 +185,24 @@ docker build -f docs/Dockerfile.nixl -t deepep-nixl .
 ```
 
 #### Multi-node RDMA (DOCA) Installation
-For multi-node support with DOCA/RDMA, additional configuration is required, make sure RDMA core libraries are properly installed and the path points to the directory containing the RDMA headers and libraries.
+For multi-node support with DOCA/RDMA, DeepEP builds the upstream [doca-gpunetio-lite](https://gitlab-master.nvidia.com/gpucomms/doca-gpunetio-lite) tree (same approach as `hybrid-ep/test`) instead of NCCL's bundled doca-gpunetio. Ensure RDMA core libraries are installed and point `RDMA_CORE_HOME` at your rdma-core build. Set `DOCA_SDK_LIB_PATH` at runtime for closed DOCA SDK features (CC groups, etc.).
 
 ```bash
+# Point at an existing checkout (recommended if submodule is not registered yet):
+export DOCA_GPUNETIO_LITE=/path/to/hybrid-ep/doca-gpunetio-lite
 export HYBRID_EP_MULTINODE=1
-# Do NOT set USE_NIXL - DOCA path requires NCCL submodule + DOCA SDK
-export RDMA_CORE_HOME=/path/to/rdma-core  # Path to your RDMA core installation
-export TORCH_CUDA_ARCH_LIST="9.0 10.0"  # Adjust based on your GPU architecture
-pip install .
+# Do NOT set USE_NIXL
+export RDMA_CORE_HOME=/path/to/rdma-core/build
+export DOCA_HOME=/opt/mellanox/doca          # optional, for SDK headers at build time
+export TORCH_CUDA_ARCH_LIST="9.0 10.0"       # Adjust for your GPU architecture
+pip install --no-build-isolation .
 ```
+
+Optional overrides:
+
+- `DOCA_GPUNETIO_LITE` — path to an existing doca-gpunetio-lite checkout (default: `third-party/doca-gpunetio-lite`)
+- `DOCA_GPUNETIO_LITE_LIB` — path to `libdoca_gpunetio_host.so` (default: written to `deep_ep/backend/doca_gpunetio_lib_path` at install time)
+- `DOCA_SDK_LIB_PATH` — runtime path to closed DOCA SDK libs (enables `doca_verbs_*_sdk_wrapper` via dlopen)
  
 > RDMA Core requirement: install `rdma-core` v60.0 ([reference](https://github.com/linux-rdma/rdma-core/tree/v60.0)), and the latest release is also recommended ([linux-rdma/rdma-core](https://github.com/linux-rdma/rdma-core.git)).
 
@@ -275,17 +284,21 @@ When using the NIXL inter-node path (`USE_NIXL=1`), the following environment va
 
 ### Troubleshooting
 
-**Error: `No rule to make target '.../doca_gpunetio_device.h', needed by 'lib'`**
+**Error: `doca-gpunetio-lite not found` or missing `libdoca_gpunetio_host.so`**
 
-This occurs when the DOCA path is used but the DOCA SDK or NCCL build is incomplete. To avoid this, use NIXL instead:
+Initialize the submodule and rebuild:
 
 ```bash
+git submodule update --init third-party/doca-gpunetio-lite
 export HYBRID_EP_MULTINODE=1
-export USE_NIXL=1
-pip install .
+pip install --no-build-isolation .
 ```
 
-During build, you should see `Multinode enabled: use_nixl=True` and `-> NIXL path: skipping NCCL/DOCA build`. If you see `-> DOCA path` instead, `USE_NIXL` is not being passed; ensure the variable is exported in the same shell that invokes the build (some pip front-ends with build isolation strip env vars - in that case use `pip install --no-build-isolation .` or pass the variable through your build configuration).
+During build you should see `-> DOCA path: building doca-gpunetio-lite`. To avoid DOCA entirely, use NIXL (`USE_NIXL=1`).
+
+**Error: `No rule to make target '.../doca_gpunetio_device.h', needed by 'lib'`**
+
+This usually means an old NCCL-based build path is still in use. Update DeepEP and ensure `third-party/doca-gpunetio-lite` is initialized instead of building `third-party/nccl`.
 
 ### Quick Start
 
